@@ -2,7 +2,7 @@ import dotenv from 'dotenv';
 import express from 'express';
 import cors from 'cors';
 import crypto from 'crypto';
-import { AccessToken, RoomServiceClient } from 'livekit-server-sdk';
+import { AccessToken, RoomServiceClient, WebhookReceiver } from 'livekit-server-sdk';
 import { createClient } from '@supabase/supabase-js';
 
 dotenv.config();
@@ -48,6 +48,7 @@ if (missingVars.length > 0) {
 // ============================================
 let supabase;
 let roomService;
+let webhookReceiver;
 
 try {
     // Initialize Supabase Client (Service Role)
@@ -67,6 +68,15 @@ try {
             process.env.LIVEKIT_API_SECRET
         );
         console.log('✅ LiveKit RoomService initialized');
+    }
+
+    // Initialize Webhook Receiver
+    if (process.env.LIVEKIT_API_KEY && process.env.LIVEKIT_API_SECRET) {
+        webhookReceiver = new WebhookReceiver(
+            process.env.LIVEKIT_API_KEY,
+            process.env.LIVEKIT_API_SECRET
+        );
+        console.log('✅ LiveKit WebhookReceiver initialized');
     }
 } catch (error) {
     console.error("❌ Failed to initialize clients:", error);
@@ -91,6 +101,40 @@ console.log(`🔌 Final PORT value: ${PORT}`);
 app.use((req, res, next) => {
     console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
     next();
+});
+
+// ============================================
+// LIVEKIT WEBHOOK HANDLER
+// ============================================
+app.post('/livekit-webhook', async (req, res) => {
+    try {
+        if (!webhookReceiver) {
+            console.warn('Webhook received but receiver not initialized');
+            return res.status(500).send('Receiver not initialized');
+        }
+
+        const event = await webhookReceiver.receive(req.body, req.get('Authorization'));
+
+        if (event.event === 'room_finished') {
+            const roomName = event.room.name;
+            console.log(`🏠 Room Finished: ${roomName}. Updating DB...`);
+
+            // Close meeting in DB
+            const { error } = await supabase
+                .from('meetings')
+                .update({
+                    is_active: false,
+                    ended_at: new Date().toISOString()
+                })
+                .eq('meeting_code', roomName);
+
+            if (error) console.error('Error closing meeting in DB:', error);
+            else console.log(`✅ Meeting ${roomName} marked ended.`);
+        }
+    } catch (error) {
+        console.error('Webhook Error:', error);
+    }
+    res.status(200).send();
 });
 
 // ============================================
@@ -497,6 +541,66 @@ app.use((req, res) => {
 });
 
 // Error Handler
+// ============================================
+// END MEETING FOR ALL
+// ============================================
+app.post('/end-meeting', async (req, res) => {
+    try {
+        const { meetingId, userId } = req.body;
+        console.log(`[POST] /end-meeting - Meeting: ${meetingId} by User: ${userId}`);
+
+        if (!meetingId || !userId) {
+            return res.status(400).json({ error: 'Missing meetingId or userId' });
+        }
+
+        // 1. Check if user is host
+        const { data: meeting, error: fetchError } = await supabase
+            .from('meetings')
+            .select('host_id, meeting_code')
+            .or(`meeting_code.eq.${meetingId},id.eq.${meetingId}`)
+            .single();
+
+        if (fetchError || !meeting) {
+            console.error('Error fetching meeting:', fetchError);
+            return res.status(404).json({ error: 'Meeting not found' });
+        }
+
+        if (meeting.host_id !== userId) {
+            return res.status(403).json({ error: 'Only the host can end the meeting for everyone' });
+        }
+
+        // 2. End room in LiveKit (disconnects everyone)
+        if (roomService) {
+            try {
+                // LiveKit uses the room name (meeting_code)
+                await roomService.deleteRoom(meeting.meeting_code);
+                console.log(`✅ LiveKit room ${meeting.meeting_code} deleted`);
+            } catch (lkError) {
+                console.warn('LiveKit delete room warning (room might be empty/closed):', lkError.message);
+            }
+        }
+
+        // 3. Update Supabase
+        const { error: updateError } = await supabase
+            .from('meetings')
+            .update({
+                is_active: false,
+                ended_at: new Date().toISOString()
+            })
+            .eq('meeting_code', meeting.meeting_code);
+
+        if (updateError) {
+            throw updateError;
+        }
+
+        return res.json({ success: true, message: 'Meeting ended for all' });
+
+    } catch (error) {
+        console.error('Error ending meeting:', error);
+        return res.status(500).json({ error: 'Internal server error', details: error.message });
+    }
+});
+
 app.use((err, req, res, next) => {
     console.error('Server Error:', err);
     res.status(500).json({ error: 'Internal server error' });
