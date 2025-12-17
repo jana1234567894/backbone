@@ -1,0 +1,29 @@
+{
+    "name": "polgotmeet-backend",
+    "version": "1.0.0",
+    "description": "Secure backend for PolyGlotMeet with LiveKit + Supabase",
+    "type": "module",
+    "main": "src/server.js",
+    "scripts": {
+        "start": "node src/server.js",
+        "dev": "node src/server.js"
+    },
+    "dependencies": {
+        "@supabase/supabase-js": "^2.87.1",
+        "cors": "^2.8.5",
+        "dotenv": "^16.3.1",
+        "express": "^4.18.2",
+        "livekit-server-sdk": "^2.15.0"
+    },
+    "engines": {
+        "node": ">=20.0.0"
+    },
+    "keywords": [
+        "livekit",
+        "webrtc",
+        "meeting",
+        "backend"
+    ],
+    "author": "",
+    "license": "MIT"
+}
