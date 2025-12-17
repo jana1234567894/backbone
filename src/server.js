@@ -315,6 +315,182 @@ app.post('/end-meeting', async (req, res) => {
     }
 });
 
+// ============================================
+// ENHANCED ENDPOINTS
+// ============================================
+
+// POST /create-meeting-with-details
+app.post('/create-meeting-with-details', async (req, res) => {
+    console.log('🎯 ===== CREATE MEETING WITH DETAILS =====');
+
+    try {
+        const { userId, meetingName, description } = req.body;
+
+        if (!userId) {
+            return res.status(400).json({ error: "userId required" });
+        }
+
+        const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+        const part1 = Array.from({ length: 3 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+        const part2 = Array.from({ length: 3 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+        const part3 = Array.from({ length: 3 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+        const meetingId = `${part1}-${part2}-${part3}`.toUpperCase();
+        const password = Math.floor(100000 + Math.random() * 900000).toString();
+        const roomName = `room_${meetingId}_${crypto.randomBytes(4).toString('hex')}`;
+
+        const { error } = await supabase
+            .from('meetings')
+            .insert({
+                meeting_code: meetingId,
+                meeting_name: meetingName || 'Untitled Meeting',
+                description: description || null,
+                password: password,
+                livekit_room: roomName,
+                host_id: userId,
+                is_active: true,
+                started_at: new Date().toISOString()
+            });
+
+        if (error) throw error;
+
+        const token = await createLiveKitToken(roomName, userId, true);
+
+        res.json({
+            meetingId,
+            password,
+            roomName,
+            token,
+            meetingName: meetingName || 'Untitled Meeting'
+        });
+
+    } catch (err) {
+        console.error('Create meeting error:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// POST /join-meeting-track
+app.post('/join-meeting-track', async (req, res) => {
+    try {
+        const { meetingId, password, userId, userName } = req.body;
+
+        const { data: meeting, error } = await supabase
+            .from('meetings')
+            .select('*')
+            .eq('meeting_code', meetingId)
+            .eq('is_active', true)
+            .single();
+
+        if (error || !meeting) {
+            return res.status(404).json({ error: "Meeting not found" });
+        }
+
+        const isHost = meeting.host_id === userId;
+        if (meeting.password !== password && !isHost) {
+            return res.status(403).json({ error: "Invalid password" });
+        }
+
+        const { data: participant } = await supabase
+            .from('meeting_participants')
+            .insert({
+                meeting_id: meetingId,
+                user_id: userId,
+                user_name: userName || 'Guest',
+                is_host: isHost,
+                joined_at: new Date().toISOString()
+            })
+            .select()
+            .single();
+
+        const token = await createLiveKitToken(meeting.livekit_room, userId, isHost);
+
+        res.json({
+            token,
+            isHost,
+            participantId: participant.id
+        });
+
+    } catch (err) {
+        console.error("Join meeting error:", err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// POST /save-transcript
+app.post('/save-transcript', async (req, res) => {
+    try {
+        const { meetingId, participantId, speakerName, originalText, translatedText, languageCode, timestampSeconds } = req.body;
+
+        await supabase
+            .from('meeting_transcripts')
+            .insert({
+                meeting_id: meetingId,
+                participant_id: participantId,
+                speaker_name: speakerName,
+                original_text: originalText,
+                translated_text: translatedText,
+                language_code: languageCode,
+                timestamp_seconds: timestampSeconds
+            });
+
+        res.json({ success: true });
+    } catch (err) {
+        console.error("Save transcript error:", err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// GET /meeting-history/:userId
+app.get('/meeting-history/:userId', async (req, res) => {
+    try {
+        const { userId } = req.params;
+
+        const { data: meetings } = await supabase
+            .from('meetings')
+            .select('*')
+            .eq('host_id', userId)
+            .order('created_at', { ascending: false });
+
+        res.json({ meetings });
+    } catch (err) {
+        console.error("Meeting history error:", err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// GET /meeting-details/:meetingId
+app.get('/meeting-details/:meetingId', async (req, res) => {
+    try {
+        const { meetingId } = req.params;
+
+        const { data: meeting } = await supabase
+            .from('meetings')
+            .select('*')
+            .eq('meeting_code', meetingId)
+            .single();
+
+        const { data: participants } = await supabase
+            .from('meeting_participants')
+            .select('*')
+            .eq('meeting_id', meetingId);
+
+        const { data: transcripts } = await supabase
+            .from('meeting_transcripts')
+            .select('*')
+            .eq('meeting_id', meetingId)
+            .order('timestamp_seconds', { ascending: true });
+
+        res.json({
+            meeting,
+            participants,
+            transcripts
+        });
+    } catch (err) {
+        console.error("Meeting details error:", err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // 404 Handler
 app.use((req, res) => {
     res.status(404).json({ error: 'Endpoint not found' });
