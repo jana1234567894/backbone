@@ -546,8 +546,8 @@ app.use((req, res) => {
 // ============================================
 app.post('/end-meeting', async (req, res) => {
     try {
-        const { meetingId, userId } = req.body;
-        console.log(`[POST] /end-meeting - Meeting: ${meetingId} by User: ${userId}`);
+        const { meetingId, userId, durationMinutes } = req.body;
+        console.log(`[POST] /end-meeting - Meeting: ${meetingId} by User: ${userId}, Duration: ${durationMinutes} min`);
 
         if (!meetingId || !userId) {
             return res.status(400).json({ error: 'Missing meetingId or userId' });
@@ -556,7 +556,7 @@ app.post('/end-meeting', async (req, res) => {
         // 1. Check if user is host
         const { data: meeting, error: fetchError } = await supabase
             .from('meetings')
-            .select('host_id, meeting_code')
+            .select('host_id, meeting_code, livekit_room')
             .or(`meeting_code.eq.${meetingId},id.eq.${meetingId}`)
             .single();
 
@@ -572,20 +572,94 @@ app.post('/end-meeting', async (req, res) => {
         // 2. End room in LiveKit (disconnects everyone)
         if (roomService) {
             try {
-                // LiveKit uses the room name (meeting_code)
-                await roomService.deleteRoom(meeting.meeting_code);
-                console.log(`✅ LiveKit room ${meeting.meeting_code} deleted`);
+                // Use the livekit_room name from database
+                await roomService.deleteRoom(meeting.livekit_room);
+                console.log(`✅ LiveKit room ${meeting.livekit_room} deleted`);
             } catch (lkError) {
                 console.warn('LiveKit delete room warning (room might be empty/closed):', lkError.message);
             }
         }
 
-        // 3. Update Supabase
+        // 3. Update Supabase with duration
+        const updateData = {
+            is_active: false,
+            ended_at: new Date().toISOString()
+        };
+
+        if (durationMinutes !== undefined && durationMinutes !== null) {
+            updateData.duration_minutes = durationMinutes;
+        }
+
+        const { error: updateError } = await supabase
+            .from('meetings')
+            .update(updateData)
+            .eq('meeting_code', meeting.meeting_code);
+
+        if (updateError) {
+            throw updateError;
+        }
+
+        console.log(`✅ Meeting ${meetingId} ended. Duration: ${durationMinutes} minutes`);
+
+        return res.json({
+            success: true,
+            message: 'Meeting ended for all',
+            durationMinutes
+        });
+
+    } catch (error) {
+        console.error('Error ending meeting:', error);
+        return res.status(500).json({ error: 'Internal server error', details: error.message });
+    }
+});
+
+// ============================================
+// END MEETING DUE TO INACTIVITY
+// ============================================
+app.post('/end-meeting-inactivity', async (req, res) => {
+    try {
+        const { meetingId, userId, durationMinutes, reason } = req.body;
+        console.log(`[POST] /end-meeting-inactivity - Meeting: ${meetingId}, Reason: ${reason}, Duration: ${durationMinutes} min`);
+
+        if (!meetingId || !userId) {
+            return res.status(400).json({ error: 'Missing meetingId or userId' });
+        }
+
+        // 1. Get meeting details
+        const { data: meeting, error: fetchError } = await supabase
+            .from('meetings')
+            .select('host_id, meeting_code, livekit_room')
+            .or(`meeting_code.eq.${meetingId},id.eq.${meetingId}`)
+            .single();
+
+        if (fetchError || !meeting) {
+            console.error('Error fetching meeting:', fetchError);
+            return res.status(404).json({ error: 'Meeting not found' });
+        }
+
+        // Only host can trigger inactivity end
+        if (meeting.host_id !== userId) {
+            return res.status(403).json({ error: 'Not authorized' });
+        }
+
+        // 2. Delete LiveKit room
+        if (roomService) {
+            try {
+                await roomService.deleteRoom(meeting.livekit_room);
+                console.log(`✅ LiveKit room ${meeting.livekit_room} deleted due to inactivity`);
+            } catch (lkError) {
+                console.warn('LiveKit delete room warning:', lkError.message);
+            }
+        }
+
+        // 3. Update database
         const { error: updateError } = await supabase
             .from('meetings')
             .update({
                 is_active: false,
-                ended_at: new Date().toISOString()
+                ended_at: new Date().toISOString(),
+                duration_minutes: durationMinutes || 0,
+                end_reason: reason || 'inactivity'
             })
             .eq('meeting_code', meeting.meeting_code);
 
@@ -593,13 +667,21 @@ app.post('/end-meeting', async (req, res) => {
             throw updateError;
         }
 
-        return res.json({ success: true, message: 'Meeting ended for all' });
+        console.log(`✅ Meeting ${meetingId} auto-ended due to ${reason}. Duration: ${durationMinutes} minutes`);
+
+        return res.json({
+            success: true,
+            message: 'Meeting ended due to inactivity',
+            reason,
+            durationMinutes
+        });
 
     } catch (error) {
-        console.error('Error ending meeting:', error);
+        console.error('Error ending meeting due to inactivity:', error);
         return res.status(500).json({ error: 'Internal server error', details: error.message });
     }
 });
+
 
 app.use((err, req, res, next) => {
     console.error('Server Error:', err);
