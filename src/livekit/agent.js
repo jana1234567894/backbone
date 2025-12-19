@@ -3,7 +3,7 @@
  * Connects to meeting rooms, subscribes to audio, and manages transcription
  */
 
-import { Room, RoomEvent, Track } from 'livekit-server-sdk';
+import { Room, RoomEvent, Track } from 'livekit-client';
 import config from '../config/env.js';
 import logger from '../utils/logger.js';
 import { createTranscriptionSession, processFinalTranscript } from '../stt/deepgram.js';
