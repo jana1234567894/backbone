@@ -17,7 +17,7 @@ export async function sendCaptionToParticipant(room, participantIdentity, captio
             messageId: uuidv4(),
             meetingId: caption.meetingId,
             speakerId: caption.speakerId,
-            speakerName: caption.speaker Name,
+            speakerName: caption.speakerName,
             originalText: caption.originalText,
             originalLanguage: caption.originalLanguage,
             translatedText: caption.translatedText,
@@ -174,6 +174,6 @@ export async function sendSystemMessage(room, message, participantIdentities = n
 export default {
     sendCaptionToParticipant,
     broadcastCaption,
-    send TranslatedCaptions,
+    sendTranslatedCaptions,
     sendSystemMessage,
 };

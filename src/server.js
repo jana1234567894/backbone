@@ -5,6 +5,14 @@ import crypto from 'crypto';
 import { AccessToken, RoomServiceClient, WebhookReceiver } from 'livekit-server-sdk';
 import { createClient } from '@supabase/supabase-js';
 
+// Import transcription modules
+import config from './config/env.js';
+import { initializeDeepgram, checkDeepgramHealth } from './stt/deepgram.js';
+import { startTranscription, stopTranscription, getActiveSessions } from './livekit/agent.js';
+import { getUserLanguage, updateUserLanguage } from './db/userSettings.js';
+import { getMeetingTranscripts } from './db/transcripts.js';
+import logger from './utils/logger.js';
+
 dotenv.config();
 
 // ============================================
@@ -679,6 +687,198 @@ app.post('/end-meeting-inactivity', async (req, res) => {
     } catch (error) {
         console.error('Error ending meeting due to inactivity:', error);
         return res.status(500).json({ error: 'Internal server error', details: error.message });
+    }
+});
+
+// ============================================
+// TRANSCRIPTION & TRANSLATION ENDPOINTS
+// ============================================
+
+// Initialize Deepgram on startup
+if (config.features.transcription) {
+    const deepgramReady = initializeDeepgram();
+    if (deepgramReady) {
+        console.log('✅ Deepgram initialized');
+    } else {
+        console.warn('⚠️ Deepgram not ready - transcription disabled');
+    }
+}
+
+// Start transcription for a meeting
+app.post('/start-transcription/:meetingId', async (req, res) => {
+    try {
+        const { meetingId } = req.params;
+        const { userId } = req.body;
+
+        if (!config.features.transcription) {
+            return res.status(400).json({ error: 'Transcription feature disabled' });
+        }
+
+        // Get meeting details
+        const { data: meeting, error: fetchError } = await supabase
+            .from('meetings')
+            .select('livekit_room, host_id')
+            .or(`meeting_code.eq.${meetingId},id.eq.${meetingId}`)
+            .single();
+
+        if (fetchError || !meeting) {
+            return res.status(404).json({ error: 'Meeting not found' });
+        }
+
+        // Generate bot token
+        const botToken = new AccessToken(
+            process.env.LIVEKIT_API_KEY,
+            process.env.LIVEKIT_API_SECRET,
+            {
+                identity: `bot_${meetingId}`,
+                name: 'Transcription Bot',
+            }
+        );
+
+        botToken.addGrant({
+            room: meeting.livekit_room,
+            roomJoin: true,
+            canPublish: true,
+            canPublishData: true,
+        });
+
+        const token = botToken.toJwt();
+
+        // Start transcription
+        const result = await startTranscription(meetingId, meeting.livekit_room, token);
+
+        if (result.success) {
+            logger.info('Transcription started', { meetingId, userId });
+            return res.json(result);
+        } else {
+            return res.status(500).json(result);
+        }
+
+    } catch (error) {
+        logger.error('Error starting transcription', { error: error.message });
+        return res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// Stop transcription for a meeting
+app.post('/stop-transcription/:meetingId', async (req, res) => {
+    try {
+        const { meetingId } = req.params;
+
+        const result = await stopTranscription(meetingId);
+
+        if (result.success) {
+            logger.info('Transcription stopped', { meetingId });
+            return res.json(result);
+        } else {
+            return res.status(404).json(result);
+        }
+
+    } catch (error) {
+        logger.error('Error stopping transcription', { error: error.message });
+        return res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// Get meeting transcripts
+app.get('/meeting-transcripts/:meetingId', async (req, res) => {
+    try {
+        const { meetingId } = req.params;
+
+        const transcripts = await getMeetingTranscripts(meetingId);
+
+        return res.json({
+            meetingId,
+            count: transcripts.length,
+            transcripts
+        });
+
+    } catch (error) {
+        logger.error('Error getting transcripts', { error: error.message });
+        return res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// Get user language preference
+app.get('/user-settings/:userId', async (req, res) => {
+    try {
+        const { userId } = req.params;
+
+        const language = await getUserLanguage(userId);
+
+        return res.json({
+            userId,
+            preferredLanguage: language
+        });
+
+    } catch (error) {
+        logger.error('Error getting user settings', { error: error.message });
+        return res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// Update user language preference
+app.put('/user-settings/:userId', async (req, res) => {
+    try {
+        const { userId } = req.params;
+        const { language } = req.body;
+
+        if (!language) {
+            return res.status(400).json({ error: 'Language required' });
+        }
+
+        const success = await updateUserLanguage(userId, language);
+
+        if (success) {
+            return res.json({ success: true, language });
+        } else {
+            return res.status(500).json({ error: 'Failed to update language' });
+        }
+
+    } catch (error) {
+        logger.error('Error updating user settings', { error: error.message });
+        return res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// Get active transcription sessions
+app.get('/transcription-sessions', async (req, res) => {
+    try {
+        const sessions = getActiveSessions();
+
+        return res.json({
+            count: sessions.length,
+            sessions
+        });
+
+    } catch (error) {
+        logger.error('Error getting sessions', { error: error.message });
+        return res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// Update health check to include transcription status
+app.get('/health', async (req, res) => {
+    try {
+        const health = {
+            ok: true,
+            service: 'PolyGlotMeet Backend',
+            uptime: process.uptime(),
+            timestamp: new Date().toISOString(),
+            features: {
+                transcription: config.features.transcription,
+                translation: config.features.translation,
+            }
+        };
+
+        if (config.features.transcription) {
+            const deepgramHealth = await checkDeepgramHealth();
+            health.deepgram = deepgramHealth;
+        }
+
+        res.json(health);
+    } catch (error) {
+        res.status(500).json({ ok: false, error: error.message });
     }
 });
 
