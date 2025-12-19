@@ -111,6 +111,23 @@ app.use((req, res, next) => {
     next();
 });
 
+// Root Endpoint (for basic verification)
+app.get('/', (req, res) => {
+    res.send('PolyGlotMeet Backend is Running 🚀');
+});
+
+// Health Check Endpoint
+app.get('/health', (req, res) => {
+    res.json({
+        status: 'healthy',
+        timestamp: new Date().toISOString(),
+        features: config.features,
+        deepgram: {
+            healthy: !!process.env.DEEPGRAM_API_KEY
+        }
+    });
+});
+
 // ============================================
 // LIVEKIT WEBHOOK HANDLER
 // ============================================
