@@ -3,7 +3,6 @@
  * Sends captions to participants via LiveKit DataChannel
  */
 
-import { DataPacket_Kind } from 'livekit-server-sdk';
 import { v4 as uuidv4 } from 'uuid';
 import logger from '../utils/logger.js';
 
@@ -33,8 +32,7 @@ export async function sendCaptionToParticipant(room, participantIdentity, captio
         // Send to specific participant
         await room.localParticipant.publishData(
             data,
-            DataPacket_Kind.RELIABLE,
-            [participantIdentity]
+            { destinationIdentities: [participantIdentity] }
         );
 
         logger.debug('Caption sent to participant', {
@@ -77,10 +75,7 @@ export async function broadcastCaption(room, caption) {
         const data = encoder.encode(JSON.stringify(message));
 
         // Broadcast to all participants
-        await room.localParticipant.publishData(
-            data,
-            DataPacket_Kind.RELIABLE
-        );
+        await room.localParticipant.publishData(data);
 
         logger.debug('Caption broadcasted to all', {
             messageId: message.messageId,
@@ -151,15 +146,11 @@ export async function sendSystemMessage(room, message, participantIdentities = n
             // Send to specific participants
             await room.localParticipant.publishData(
                 data,
-                DataPacket_Kind.RELIABLE,
-                participantIdentities
+                { destinationIdentities: participantIdentities }
             );
         } else {
             // Broadcast to all
-            await room.localParticipant.publishData(
-                data,
-                DataPacket_Kind.RELIABLE
-            );
+            await room.localParticipant.publishData(data);
         }
 
         logger.debug('System message sent', { message, participantCount: participantIdentities?.length || 'all' });
